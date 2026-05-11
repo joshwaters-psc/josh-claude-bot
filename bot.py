@@ -34,6 +34,18 @@ def system_prompt_for(chat_id: int) -> str:
     return compose_mba_prompt(mode)
 
 
+def cacheable_system(chat_id: int) -> list[dict]:
+    # The MBA system prompt is ~3.5k tokens and identical across turns within
+    # a conversation. cache_control makes Anthropic cache it for ~5 min and
+    # bill subsequent reads at ~10% of the normal input rate. The small default
+    # prompt falls below the cache minimum and is silently uncached.
+    return [{
+        "type": "text",
+        "text": system_prompt_for(chat_id),
+        "cache_control": {"type": "ephemeral"},
+    }]
+
+
 def trim_history(chat_id: int) -> None:
     h = histories[chat_id]
     if len(h) > config.max_history * 2:
@@ -47,8 +59,15 @@ async def ask_claude(chat_id: int, user_text: str) -> str:
         response = client.messages.create(
             model=config.model,
             max_tokens=1024,
-            system=system_prompt_for(chat_id),
+            system=cacheable_system(chat_id),
             messages=histories[chat_id],
+        )
+        u = response.usage
+        logger.info(
+            "tokens in=%s out=%s cache_read=%s cache_write=%s",
+            u.input_tokens, u.output_tokens,
+            getattr(u, "cache_read_input_tokens", 0),
+            getattr(u, "cache_creation_input_tokens", 0),
         )
         reply = response.content[0].text
         histories[chat_id].append({"role": "assistant", "content": reply})
